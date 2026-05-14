@@ -12,19 +12,34 @@ class WhisperService {
   bool _isInitialized = false;
 
   bool get isInitialized => _isInitialized;
+  WhisperModel? get currentModel => _whisper?.model;
+
+  /// Check if a model is already downloaded
+  Future<bool> isModelDownloaded(WhisperModel model) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final modelDir = '${directory.path}/whisper_models';
+    final modelFileName = getModelFileName(model);
+    final modelFile = File('$modelDir/$modelFileName');
+    return await modelFile.exists();
+  }
 
   /// Initialize Whisper and download model if necessary
   Future<void> init({
-    WhisperModel model = WhisperModel.medium,
+    WhisperModel model = WhisperModel.base,
     Function(int, int)? onDownloadProgress,
   }) async {
+    // If already initialized with the same model, skip
+    if (_isInitialized && _whisper?.model == model) {
+      return;
+    }
+
     try {
       final directory = await getApplicationDocumentsDirectory();
       final modelDir = '${directory.path}/whisper_models';
-      
+
       await Directory(modelDir).create(recursive: true);
 
-      final modelFileName = _getModelFileName(model);
+      final modelFileName = getModelFileName(model);
       final modelFile = File('$modelDir/$modelFileName');
 
       if (!await modelFile.exists()) {
@@ -35,14 +50,15 @@ class WhisperService {
         );
       }
 
-       _whisper = Whisper(
+      _whisper = Whisper(
         model: model,
         modelDir: modelDir,
       );
-      
+
       _isInitialized = true;
     } catch (e) {
       _isInitialized = false;
+      _whisper = null;
       rethrow;
     }
   }
@@ -75,7 +91,7 @@ class WhisperService {
   }
 
   /// Helper to get the filename for the Whisper model
-  String _getModelFileName(WhisperModel model) {
+  String getModelFileName(WhisperModel model) {
     switch (model) {
       case WhisperModel.tiny:
         return 'ggml-tiny.bin';

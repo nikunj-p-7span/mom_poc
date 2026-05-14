@@ -21,10 +21,62 @@ class _RecordScreenState extends State<RecordScreen> {
   bool _isRecording = false;
   bool _isTranscribing = false;
   bool _isDownloadingModel = false;
+  bool _isModelDownloaded = false;
   double _downloadProgress = 0;
   String _selectedLanguage = 'en';
+  WhisperModel _selectedModel = WhisperModel.base;
   Timer? _timer;
   int _recordDuration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkModelStatus();
+  }
+
+  Future<void> _checkModelStatus() async {
+    final isDownloaded = await _whisperService.isModelDownloaded(_selectedModel);
+    setState(() {
+      _isModelDownloaded = isDownloaded;
+    });
+  }
+
+  Future<void> _downloadModel() async {
+    setState(() {
+      _isDownloadingModel = true;
+      _downloadProgress = 0;
+    });
+
+    try {
+      await _whisperService.init(
+        model: _selectedModel,
+        onDownloadProgress: (received, total) {
+          if (mounted) {
+            setState(() {
+              _downloadProgress = received / total;
+            });
+          }
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _isModelDownloaded = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error downloading model: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDownloadingModel = false;
+        });
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -94,37 +146,25 @@ class _RecordScreenState extends State<RecordScreen> {
     });
 
     try {
-      // Initialize if not done
-      if (!_whisperService.isInitialized) {
-        debugPrint('[Whisper] Model not initialized — starting download...');
-        setState(() {
-          _isDownloadingModel = true;
-          _downloadProgress = 0;
-        });
-
+      debugPrint('[Whisper] Ensuring model is initialized: $_selectedModel');
+      
+      // If model not initialized in service, initialize it (it should already be downloaded)
+      if (!_whisperService.isInitialized || (_whisperService.currentModel != _selectedModel)) {
         await _whisperService.init(
-          model: WhisperModel.medium,
+          model: _selectedModel,
           onDownloadProgress: (received, total) {
-            final progress = received / total;
-            final receivedMB = (received / 1024 / 1024).toStringAsFixed(2);
-            final totalMB = (total / 1024 / 1024).toStringAsFixed(2);
-            final percent = (progress * 100).toStringAsFixed(1);
-
-            debugPrint(
-              '[Whisper] Downloading model: $receivedMB MB / $totalMB MB ($percent%)',
-            );
-
-            setState(() {
-              _downloadProgress = progress;
-            });
+            if (mounted) {
+              setState(() {
+                _isDownloadingModel = true;
+                _downloadProgress = received / total;
+              });
+            }
           },
         );
-
-        debugPrint('[Whisper] Model download complete ✓');
-        setState(() => _isDownloadingModel = false);
-      } else {
-        debugPrint('[Whisper] Model already initialized — skipping download.');
       }
+
+      debugPrint('[Whisper] Model initialized ✓');
+      setState(() => _isDownloadingModel = false);
 
       debugPrint('[Whisper] Starting transcription for: $path');
       debugPrint('[Whisper] Selected language: $_selectedLanguage');
@@ -172,15 +212,17 @@ class _RecordScreenState extends State<RecordScreen> {
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
-            const SizedBox(height: 20),
+            const SizedBox(height: 10),
             _buildLanguageSelector(),
+            const SizedBox(height: 12),
+            _buildModelSelector(),
             const Spacer(),
             if (_isTranscribing)
               _buildProcessingUI()
             else
               _buildRecordingUI(),
             const Spacer(),
-            if (!_isRecording && !_isTranscribing)
+            if (!_isRecording && !_isTranscribing && _isModelDownloaded)
               TextButton.icon(
                 onPressed: _pickFile,
                 icon: const Icon(Icons.file_upload),
@@ -222,6 +264,74 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
+  Widget _buildModelSelector() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.speed, color: AppConstants.primaryColor),
+                SizedBox(width: 12),
+                Text('Transcription Quality:', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SegmentedButton<WhisperModel>(
+                segments: const [
+                  ButtonSegment(
+                    value: WhisperModel.tiny,
+                    label: Text('Fast'),
+                    icon: Icon(Icons.bolt, size: 16),
+                  ),
+                  ButtonSegment(
+                    value: WhisperModel.base,
+                    label: Text('Balanced'),
+                    icon: Icon(Icons.balance, size: 16),
+                  ),
+                  ButtonSegment(
+                    value: WhisperModel.medium,
+                    label: Text('Accurate'),
+                    icon: Icon(Icons.high_quality, size: 16),
+                  ),
+                ],
+                selected: {_selectedModel},
+                onSelectionChanged: (Set<WhisperModel> newSelection) {
+                  setState(() {
+                    _selectedModel = newSelection.first;
+                    _checkModelStatus();
+                  });
+                },
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _getModelDescription(_selectedModel),
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _getModelDescription(WhisperModel model) {
+    switch (model) {
+      case WhisperModel.tiny:
+        return 'Very fast, lowest accuracy (approx. 39MB)';
+      case WhisperModel.base:
+        return 'Fast, good accuracy (approx. 145MB)';
+      case WhisperModel.medium:
+        return 'Slow, highest accuracy (approx. 1.5GB)';
+      default:
+        return '';
+    }
+  }
+
   Widget _buildRecordingUI() {
     return Column(
       children: [
@@ -241,34 +351,81 @@ class _RecordScreenState extends State<RecordScreen> {
           ),
         ],
         const SizedBox(height: 48),
-        GestureDetector(
-          onTap: _toggleRecording,
-          child: Container(
-            width: 100,
-            height: 100,
-            decoration: BoxDecoration(
-              color: _isRecording ? Colors.red : AppConstants.primaryColor,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: (_isRecording ? Colors.red : AppConstants.primaryColor).withValues(alpha: 0.3),
-                  spreadRadius: 8,
-                  blurRadius: 16,
+        if (!_isModelDownloaded || _isDownloadingModel)
+          _buildDownloadUI()
+        else
+          _buildMicButton(),
+        const SizedBox(height: 24),
+        Text(
+          _isDownloadingModel
+              ? 'Downloading Model...'
+              : _isModelDownloaded
+                  ? (_isRecording ? 'Tap to Stop' : 'Tap to Start Recording')
+                  : 'Download model to start',
+          style: const TextStyle(fontSize: 16, color: Colors.black54),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMicButton() {
+    return GestureDetector(
+      onTap: _toggleRecording,
+      child: Container(
+        width: 100,
+        height: 100,
+        decoration: BoxDecoration(
+          color: _isRecording ? Colors.red : AppConstants.primaryColor,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: (_isRecording ? Colors.red : AppConstants.primaryColor).withValues(alpha: 0.3),
+              spreadRadius: 8,
+              blurRadius: 16,
+            ),
+          ],
+        ),
+        child: Icon(
+          _isRecording ? Icons.stop : Icons.mic,
+          color: Colors.white,
+          size: 48,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDownloadUI() {
+    return Column(
+      children: [
+        if (_isDownloadingModel) ...[
+          SizedBox(
+            width: 200,
+            child: Column(
+              children: [
+                LinearProgressIndicator(
+                  value: _downloadProgress,
+                  backgroundColor: AppConstants.primaryColor.withValues(alpha: 0.1),
+                  valueColor: const AlwaysStoppedAnimation<Color>(AppConstants.primaryColor),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${(_downloadProgress * 100).toStringAsFixed(1)}%',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ],
             ),
-            child: Icon(
-              _isRecording ? Icons.stop : Icons.mic,
-              color: Colors.white,
-              size: 48,
+          ),
+        ] else
+          ElevatedButton.icon(
+            onPressed: _downloadModel,
+            icon: const Icon(Icons.download),
+            label: const Text('Download Model'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppConstants.primaryColor,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
             ),
           ),
-        ),
-        const SizedBox(height: 24),
-        Text(
-          _isRecording ? 'Tap to Stop' : 'Tap to Start Recording',
-          style: const TextStyle(fontSize: 16, color: Colors.black54),
-        ),
       ],
     );
   }
