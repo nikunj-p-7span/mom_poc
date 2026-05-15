@@ -76,7 +76,7 @@ class WhisperService {
     try {
       final request = TranscribeRequest(
         audio: audioPath,
-        language: language,
+        language: 'en',
         isVerbose: true,
       );
 

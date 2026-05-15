@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:mom_poc/services/gemma_service.dart';
 import 'package:mom_poc/utils/constants.dart';
+import 'package:mom_poc/screens/record_screen.dart';
+import 'package:mom_poc/services/gemma_service.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 class ResultScreen extends StatefulWidget {
@@ -47,6 +48,8 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
   }
 
   Future<void> _generateNotes() async {
+    _tabController.animateTo(1); // Switch to AI Notes tab immediately
+
     // Check if model needs installation/loading
     if (!_gemmaService.isModelLoaded) {
       setState(() {
@@ -74,7 +77,6 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
 
     setState(() {
       _isGenerating = true;
-      _tabController.animateTo(1); // Switch to AI Notes tab
     });
 
     try {
@@ -121,15 +123,6 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
           _buildNotesTab(),
         ],
       ),
-      floatingActionButton: _tabController.index == 0 && _generatedNotes == null && !_isGenerating && !_isDownloading
-          ? FloatingActionButton.extended(
-              onPressed: _generateNotes,
-              label: const Text('Generate AI Notes'),
-              icon: const Icon(Icons.auto_awesome),
-              backgroundColor: AppConstants.primaryColor,
-              foregroundColor: Colors.white,
-            )
-          : null,
     );
   }
 
@@ -165,7 +158,7 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
             ElevatedButton.icon(
               onPressed: _generateNotes,
               icon: const Icon(Icons.auto_awesome),
-              label: const Text('Generate Smart Notes (Gemma 1B)'),
+              label: const Text('Generate Smart Notes'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppConstants.primaryColor,
                 foregroundColor: Colors.white,
@@ -238,11 +231,6 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
             const Icon(Icons.auto_awesome_outlined, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
             const Text('No notes generated yet.'),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: _generateNotes,
-              child: const Text('Generate Now'),
-            ),
           ],
         ),
       );

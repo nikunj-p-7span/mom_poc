@@ -6,6 +6,8 @@ import 'package:mom_poc/utils/constants.dart';
 import 'dart:async';
 
 import 'package:whisper_kit/download_model.dart';
+import 'dart:io';
+import 'package:path/path.dart' as p;
 
 class RecordScreen extends StatefulWidget {
   const RecordScreen({super.key});
@@ -23,8 +25,7 @@ class _RecordScreenState extends State<RecordScreen> {
   bool _isDownloadingModel = false;
   bool _isModelDownloaded = false;
   double _downloadProgress = 0;
-  String _selectedLanguage = 'en';
-  WhisperModel _selectedModel = WhisperModel.base;
+  WhisperModel _selectedModel = WhisperModel.medium;
   Timer? _timer;
   int _recordDuration = 0;
 
@@ -124,7 +125,7 @@ class _RecordScreenState extends State<RecordScreen> {
         return;
       }
 
-      final path = await _audioService.getTempPath();
+      final path = await _audioService.getRecordingPath();
       await _audioService.startRecording(path);
       _startTimer();
       setState(() {
@@ -134,10 +135,72 @@ class _RecordScreenState extends State<RecordScreen> {
   }
 
   Future<void> _pickFile() async {
-    final path = await _audioService.pickAudioFile();
-    if (path != null) {
-      _startTranscription(path);
+    final List<File> files = await _audioService.getRecordedFiles();
+    
+    if (!mounted) return;
+
+    if (files.isEmpty) {
+      final path = await _audioService.pickAudioFile();
+      if (path != null) {
+        _startTranscription(path);
+      }
+      return;
     }
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Pick a Recording',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: files.length,
+                  itemBuilder: (context, index) {
+                    final file = files[index];
+                    final fileName = p.basename(file.path);
+                    final fileSize = (file.lengthSync() / 1024).toStringAsFixed(1);
+
+                    return ListTile(
+                      leading: const Icon(Icons.audio_file, color: AppConstants.primaryColor),
+                      title: Text(fileName),
+                      subtitle: Text('$fileSize KB'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _startTranscription(file.path);
+                      },
+                    );
+                  },
+                ),
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.folder_open),
+                title: const Text('Other audio files...'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final path = await _audioService.pickAudioFile();
+                  if (path != null) {
+                    _startTranscription(path);
+                  }
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _startTranscription(String path) async {
@@ -167,17 +230,16 @@ class _RecordScreenState extends State<RecordScreen> {
       setState(() => _isDownloadingModel = false);
 
       debugPrint('[Whisper] Starting transcription for: $path');
-      debugPrint('[Whisper] Selected language: $_selectedLanguage');
 
       final text = await _whisperService.transcribe(
         path,
-        language: _selectedLanguage,
+        language: 'en',
       );
 
       debugPrint('[Whisper] Transcription complete. Length: ${text.length} chars');
 
       if (mounted) {
-        Navigator.pushReplacement(
+        Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) => ResultScreen(transcript: text),
@@ -209,12 +271,9 @@ class _RecordScreenState extends State<RecordScreen> {
         title: const Text('Record & Transcribe'),
       ),
       body: Padding(
-        padding: const EdgeInsets.all(24.0),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            const SizedBox(height: 10),
-            _buildLanguageSelector(),
-            const SizedBox(height: 12),
             _buildModelSelector(),
             const Spacer(),
             if (_isTranscribing)
@@ -235,83 +294,64 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
-  Widget _buildLanguageSelector() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-        child: Row(
-          children: [
-            const Icon(Icons.language, color: AppConstants.primaryColor),
-            const SizedBox(width: 12),
-            const Text('Language: ', style: TextStyle(fontWeight: FontWeight.bold)),
-            const Spacer(),
-            DropdownButton<String>(
-              value: _selectedLanguage,
-              underline: const SizedBox(),
-              items: AppConstants.languages.entries.map((e) {
-                return DropdownMenuItem(
-                  value: e.value,
-                  child: Text(e.key),
-                );
-              }).toList(),
-              onChanged: (val) {
-                if (val != null) setState(() => _selectedLanguage = val);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildModelSelector() {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        padding: const EdgeInsets.symmetric(vertical: 12.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Row(
-              children: [
-                Icon(Icons.speed, color: AppConstants.primaryColor),
-                SizedBox(width: 12),
-                Text('Transcription Quality:', style: TextStyle(fontWeight: FontWeight.bold)),
-              ],
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: const Row(
+                children: [
+                  Icon(Icons.speed, color: AppConstants.primaryColor),
+                  SizedBox(width: 12),
+                  Text('Transcription Quality:', style: TextStyle(fontWeight: FontWeight.bold)),
+                ],
+              ),
             ),
             const SizedBox(height: 8),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: SegmentedButton<WhisperModel>(
-                segments: const [
-                  ButtonSegment(
-                    value: WhisperModel.tiny,
-                    label: Text('Fast'),
-                    icon: Icon(Icons.bolt, size: 16),
-                  ),
-                  ButtonSegment(
-                    value: WhisperModel.base,
-                    label: Text('Balanced'),
-                    icon: Icon(Icons.balance, size: 16),
-                  ),
-                  ButtonSegment(
-                    value: WhisperModel.medium,
-                    label: Text('Accurate'),
-                    icon: Icon(Icons.high_quality, size: 16),
-                  ),
-                ],
-                selected: {_selectedModel},
-                onSelectionChanged: (Set<WhisperModel> newSelection) {
-                  setState(() {
-                    _selectedModel = newSelection.first;
-                    _checkModelStatus();
-                  });
-                },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: SegmentedButton<WhisperModel>(
+                  segments: const [
+                    ButtonSegment(
+                      value: WhisperModel.tiny,
+                      label: Text('Fast'),
+                      icon: Icon(Icons.bolt, size: 16),
+                    ),
+                    ButtonSegment(
+                      value: WhisperModel.base,
+                      label: Text('Balanced'),
+                      icon: Icon(Icons.balance, size: 16),
+                    ),
+                    ButtonSegment(
+                      value: WhisperModel.medium,
+                      label: Text('Accurate'),
+                      icon: Icon(Icons.high_quality, size: 16),
+                    ),
+                  ],
+                  selected: {_selectedModel},
+                  onSelectionChanged: (Set<WhisperModel> newSelection) {
+                    setState(() {
+                      _selectedModel = newSelection.first;
+                      _checkModelStatus();
+                    });
+                  },
+                ),
               ),
             ),
             const SizedBox(height: 4),
-            Text(
-              _getModelDescription(_selectedModel),
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: Text(
+                _getModelDescription(_selectedModel),
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
             ),
           ],
         ),

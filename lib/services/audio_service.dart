@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
@@ -32,13 +33,43 @@ class AudioService {
     return await _recorder.stop();
   }
 
-  /// Get a temporary path for recording
-  Future<String> getTempPath() async {
-    final dir = await getTemporaryDirectory();
-    return p.join(dir.path, 'recording_${DateTime.now().millisecondsSinceEpoch}.wav');
+  /// Get a path for recording in the documents directory with a timestamp
+  Future<String> getRecordingPath() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
+    if (!await recordingsDir.exists()) {
+      await recordingsDir.create(recursive: true);
+    }
+    
+    final now = DateTime.now();
+    final hour12 = now.hour % 12 == 0 ? 12 : now.hour % 12;
+    final amPm = now.hour < 12 ? 'AM' : 'PM';
+    
+    final dateStr = "${now.year}-${_twoDigits(now.month)}-${_twoDigits(now.day)}";
+    final timeStr = "${_twoDigits(hour12)}.${_twoDigits(now.minute)}.${_twoDigits(now.second)} $amPm";
+    
+    return p.join(recordingsDir.path, 'recording $dateStr $timeStr.wav');
   }
 
-  /// Pick an audio file from the device
+  String _twoDigits(int n) => n >= 10 ? "$n" : "0$n";
+
+  /// Get all recorded files from the app's recording directory
+  Future<List<File>> getRecordedFiles() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
+    if (!await recordingsDir.exists()) return [];
+    
+    final files = recordingsDir.listSync()
+        .whereType<File>()
+        .where((file) => p.extension(file.path) == '.wav')
+        .toList();
+    
+    // Sort by date (newest first)
+    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    return files;
+  }
+
+  /// Pick an audio file from the device (system picker)
   Future<String?> pickAudioFile() async {
     FilePickerResult? result = await FilePicker.pickFiles(
       type: FileType.audio,
