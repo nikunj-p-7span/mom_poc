@@ -1,13 +1,12 @@
+import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:mom_poc/services/audio_service.dart';
-import 'package:mom_poc/services/whisper_service.dart';
 import 'package:mom_poc/screens/result_screen.dart';
 import 'package:mom_poc/utils/constants.dart';
-import 'dart:async';
-
-import 'package:whisper_kit/download_model.dart';
-import 'dart:io';
 import 'package:path/path.dart' as p;
+import 'package:dart_openai/dart_openai.dart';
 
 class RecordScreen extends StatefulWidget {
   const RecordScreen({super.key});
@@ -18,66 +17,14 @@ class RecordScreen extends StatefulWidget {
 
 class _RecordScreenState extends State<RecordScreen> {
   final AudioService _audioService = AudioService();
-  final WhisperService _whisperService = WhisperService();
 
   bool _isRecording = false;
   bool _isTranscribing = false;
-  bool _isDownloadingModel = false;
-  bool _isModelDownloaded = false;
-  double _downloadProgress = 0;
-  WhisperModel _selectedModel = WhisperModel.medium;
   Timer? _timer;
   int _recordDuration = 0;
 
-  @override
-  void initState() {
-    super.initState();
-    _checkModelStatus();
-  }
-
-  Future<void> _checkModelStatus() async {
-    final isDownloaded = await _whisperService.isModelDownloaded(_selectedModel);
-    setState(() {
-      _isModelDownloaded = isDownloaded;
-    });
-  }
-
-  Future<void> _downloadModel() async {
-    setState(() {
-      _isDownloadingModel = true;
-      _downloadProgress = 0;
-    });
-
-    try {
-      await _whisperService.init(
-        model: _selectedModel,
-        onDownloadProgress: (received, total) {
-          if (mounted) {
-            setState(() {
-              _downloadProgress = received / total;
-            });
-          }
-        },
-      );
-      if (mounted) {
-        setState(() {
-          _isModelDownloaded = true;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error downloading model: $e')),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isDownloadingModel = false;
-        });
-      }
-    }
-  }
+  final String _apiKey = dotenv.env['OPEN_AI_KEY'] ?? '';
+  File? _selectedFile;
 
   @override
   void dispose() {
@@ -112,7 +59,10 @@ class _RecordScreenState extends State<RecordScreen> {
         _isRecording = false;
       });
       if (path != null) {
-        _startTranscription(path);
+        setState(() {
+          _selectedFile = File(path);
+        });
+        _transcribeAudio();
       }
     } else {
       final hasPermission = await _audioService.checkPermission();
@@ -136,13 +86,16 @@ class _RecordScreenState extends State<RecordScreen> {
 
   Future<void> _pickFile() async {
     final List<File> files = await _audioService.getRecordedFiles();
-    
+
     if (!mounted) return;
 
     if (files.isEmpty) {
       final path = await _audioService.pickAudioFile();
       if (path != null) {
-        _startTranscription(path);
+        setState(() {
+          _selectedFile = File(path);
+        });
+        _transcribeAudio();
       }
       return;
     }
@@ -178,7 +131,10 @@ class _RecordScreenState extends State<RecordScreen> {
                       subtitle: Text('$fileSize KB'),
                       onTap: () {
                         Navigator.pop(context);
-                        _startTranscription(file.path);
+                        setState(() {
+                          _selectedFile = file;
+                        });
+                        _transcribeAudio();
                       },
                     );
                   },
@@ -192,7 +148,10 @@ class _RecordScreenState extends State<RecordScreen> {
                   Navigator.pop(context);
                   final path = await _audioService.pickAudioFile();
                   if (path != null) {
-                    _startTranscription(path);
+                    setState(() {
+                      _selectedFile = File(path);
+                    });
+                    _transcribeAudio();
                   }
                 },
               ),
@@ -203,62 +162,80 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
-  Future<void> _startTranscription(String path) async {
+  Future<void> _transcribeAudio() async {
+    // Validate state
+    if (_apiKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter an OpenAI API Key.')));
+      return;
+    }
+    if (_selectedFile == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select an audio file first.')));
+      return;
+    }
+
+    // Set transcribing state to show loading indicator
     setState(() {
       _isTranscribing = true;
     });
 
     try {
-      debugPrint('[Whisper] Ensuring model is initialized: $_selectedModel');
-      
-      // If model not initialized in service, initialize it (it should already be downloaded)
-      if (!_whisperService.isInitialized || (_whisperService.currentModel != _selectedModel)) {
-        await _whisperService.init(
-          model: _selectedModel,
-          onDownloadProgress: (received, total) {
-            if (mounted) {
-              setState(() {
-                _isDownloadingModel = true;
-                _downloadProgress = received / total;
-              });
-            }
-          },
-        );
-      }
+      // Set the API Key for dart_openai
+      OpenAI.apiKey = _apiKey;
 
-      debugPrint('[Whisper] Model initialized ✓');
-      setState(() => _isDownloadingModel = false);
+      // Translate multilingual audio -> English
+      final translation = await OpenAI.instance.audio.createTranslation(
+        file: _selectedFile!,
+        model: "whisper-1",
+        responseFormat: OpenAIAudioResponseFormat.json,
+        prompt: """
+The audio contains an internal office meeting conversation.
 
-      debugPrint('[Whisper] Starting transcription for: $path');
+The speakers may talk in:
+- English
+- Hindi
+- Gujarati
+- Mixed multilingual sentences
 
-      final text = await _whisperService.transcribe(
-        path,
-        language: 'en',
+Your task:
+- Translate the entire conversation into clear professional English.
+- Preserve the original meaning and context accurately.
+- Keep technical terms, project names, APIs, code references, and business terminology unchanged where appropriate.
+- Maintain discussion flow between team members.
+- Convert informal spoken sentences into readable professional English.
+- Remove filler words, repeated words, unnecessary pauses, and background noise expressions.
+- Keep action items, decisions, blockers, deadlines, suggestions, and important discussion points accurate.
+- Preserve names of people, technologies, frameworks, libraries, and tools exactly as spoken.
+- If multiple speakers are talking, separate statements logically.
+
+Important:
+- Return ONLY clean English text.
+- Do NOT summarize.
+- Do NOT generate MOM notes.
+- Do NOT omit important discussion points.
+- Do NOT add extra explanations.
+""",
       );
 
-      debugPrint('[Whisper] Transcription complete. Length: ${text.length} chars');
+      final transcriptionResult = translation;
 
       if (mounted) {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => ResultScreen(transcript: text),
+            builder: (context) => ResultScreen(transcript: transcriptionResult),
           ),
         );
       }
-    } catch (e, stackTrace) {
-      debugPrint('[Whisper] ERROR: ${e.toString()}');
-      debugPrint('[Whisper] StackTrace: $stackTrace');
+    } catch (e) {
+      // Handle transcription error
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Transcription failed: $e')));
       }
     } finally {
+      // Revert loading state
       if (mounted) {
         setState(() {
           _isTranscribing = false;
-          _isDownloadingModel = false;
         });
       }
     }
@@ -268,20 +245,18 @@ class _RecordScreenState extends State<RecordScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Record & Transcribe'),
+        title: const Text('Record & Transcribe (Online)'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            _buildModelSelector(),
             const Spacer(),
-            if (_isTranscribing)
-              _buildProcessingUI()
-            else
-              _buildRecordingUI(),
+            Center(
+              child: _isTranscribing ? _buildProcessingUI() : _buildRecordingUI(),
+            ),
             const Spacer(),
-            if (!_isRecording && !_isTranscribing && _isModelDownloaded)
+            if (!_isRecording && !_isTranscribing)
               TextButton.icon(
                 onPressed: _pickFile,
                 icon: const Icon(Icons.file_upload),
@@ -292,84 +267,6 @@ class _RecordScreenState extends State<RecordScreen> {
         ),
       ),
     );
-  }
-
-
-  Widget _buildModelSelector() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
-              child: const Row(
-                children: [
-                  Icon(Icons.speed, color: AppConstants.primaryColor),
-                  SizedBox(width: 12),
-                  Text('Transcription Quality:', style: TextStyle(fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                child: SegmentedButton<WhisperModel>(
-                  segments: const [
-                    ButtonSegment(
-                      value: WhisperModel.tiny,
-                      label: Text('Fast'),
-                      icon: Icon(Icons.bolt, size: 16),
-                    ),
-                    ButtonSegment(
-                      value: WhisperModel.base,
-                      label: Text('Balanced'),
-                      icon: Icon(Icons.balance, size: 16),
-                    ),
-                    ButtonSegment(
-                      value: WhisperModel.medium,
-                      label: Text('Accurate'),
-                      icon: Icon(Icons.high_quality, size: 16),
-                    ),
-                  ],
-                  selected: {_selectedModel},
-                  onSelectionChanged: (Set<WhisperModel> newSelection) {
-                    setState(() {
-                      _selectedModel = newSelection.first;
-                      _checkModelStatus();
-                    });
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
-              child: Text(
-                _getModelDescription(_selectedModel),
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _getModelDescription(WhisperModel model) {
-    switch (model) {
-      case WhisperModel.tiny:
-        return 'Very fast, lowest accuracy (approx. 39MB)';
-      case WhisperModel.base:
-        return 'Fast, good accuracy (approx. 145MB)';
-      case WhisperModel.medium:
-        return 'Slow, highest accuracy (approx. 1.5GB)';
-      default:
-        return '';
-    }
   }
 
   Widget _buildRecordingUI() {
@@ -391,17 +288,10 @@ class _RecordScreenState extends State<RecordScreen> {
           ),
         ],
         const SizedBox(height: 48),
-        if (!_isModelDownloaded || _isDownloadingModel)
-          _buildDownloadUI()
-        else
-          _buildMicButton(),
+        _buildMicButton(),
         const SizedBox(height: 24),
         Text(
-          _isDownloadingModel
-              ? 'Downloading Model...'
-              : _isModelDownloaded
-                  ? (_isRecording ? 'Tap to Stop' : 'Tap to Start Recording')
-                  : 'Download model to start',
+          _isRecording ? 'Tap to Stop' : 'Tap to Start Recording',
           style: const TextStyle(fontSize: 16, color: Colors.black54),
         ),
       ],
@@ -434,57 +324,15 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
-  Widget _buildDownloadUI() {
-    return Column(
-      children: [
-        if (_isDownloadingModel) ...[
-          SizedBox(
-            width: 200,
-            child: Column(
-              children: [
-                LinearProgressIndicator(
-                  value: _downloadProgress,
-                  backgroundColor: AppConstants.primaryColor.withValues(alpha: 0.1),
-                  valueColor: const AlwaysStoppedAnimation<Color>(AppConstants.primaryColor),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${(_downloadProgress * 100).toStringAsFixed(1)}%',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-        ] else
-          ElevatedButton.icon(
-            onPressed: _downloadModel,
-            icon: const Icon(Icons.download),
-            label: const Text('Download Model'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppConstants.primaryColor,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-            ),
-          ),
-      ],
-    );
-  }
-
   Widget _buildProcessingUI() {
     return Column(
       children: [
         const CircularProgressIndicator(),
         const SizedBox(height: 24),
-        Text(
-          _isDownloadingModel ? 'Downloading Model...' : 'Transcribing...',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        const Text(
+          'Transcribing online with OpenAI...',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
-        if (_isDownloadingModel) ...[
-          const SizedBox(height: 16),
-          LinearProgressIndicator(value: _downloadProgress),
-          const SizedBox(height: 8),
-          Text('${(_downloadProgress * 100).toStringAsFixed(1)}%'),
-        ],
         const SizedBox(height: 16),
         const Text(
           'This may take a few moments depending on audio length.',
