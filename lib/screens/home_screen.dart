@@ -25,6 +25,13 @@ class HomeScreen extends StatelessWidget {
               Theme.of(context).colorScheme.primaryContainer,
               Theme.of(context).colorScheme.surface,
             ],
+
+
+
+
+
+
+
           ),
         ),
         child: SafeArea(
