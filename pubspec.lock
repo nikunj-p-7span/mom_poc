@@ -240,14 +240,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  freezed_annotation:
-    dependency: transitive
-    description:
-      name: freezed_annotation
-      sha256: "7294967ff0a6d98638e7acb774aac3af2550777accd8149c90af5b014e6d44d8"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.1.0"
   glob:
     dependency: transitive
     description:
@@ -296,14 +288,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.1"
-  json_annotation:
-    dependency: transitive
-    description:
-      name: json_annotation
-      sha256: cb09e7dac6210041fad964ed7fbee004f14258b4eca4040f72d1234062ace4c8
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.11.0"
   large_file_handler:
     dependency: transitive
     description:
@@ -829,14 +813,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.1"
-  whisper_kit:
-    dependency: "direct main"
-    description:
-      name: whisper_kit
-      sha256: "85d99b5122a99a577d8fcba288022dfdff97ae349924d9d842c16f00a5089886"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.3.1"
   win32:
     dependency: transitive
     description:

@@ -187,7 +187,7 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
               ),
               const SizedBox(height: 16),
               const Text(
-                'Gemma 1B is required for offline note generation.',
+                'Gemma is required for offline note generation.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.black54),
               ),

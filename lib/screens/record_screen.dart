@@ -165,11 +165,17 @@ class _RecordScreenState extends State<RecordScreen> {
   Future<void> _transcribeAudio() async {
     // Validate state
     if (_apiKey.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter an OpenAI API Key.')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter an OpenAI API Key.')),
+      );
       return;
     }
     if (_selectedFile == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select an audio file first.')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select an audio file first.')),
+      );
       return;
     }
 
@@ -183,7 +189,7 @@ class _RecordScreenState extends State<RecordScreen> {
       OpenAI.apiKey = _apiKey;
 
       // Translate multilingual audio -> English
-      final translation = await OpenAI.instance.audio.createTranslation(
+      final translationText = await OpenAI.instance.audio.createTranslation(
         file: _selectedFile!,
         model: "whisper-1",
         responseFormat: OpenAIAudioResponseFormat.json,
@@ -216,7 +222,7 @@ Important:
 """,
       );
 
-      final transcriptionResult = translation;
+      final transcriptionResult = translationText;
 
       if (mounted) {
         Navigator.push(

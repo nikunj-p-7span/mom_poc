@@ -32,7 +32,7 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.9
-  whisper_kit: 0.3.1
+#  whisper_kit: 0.3.1
   record: ^6.2.0
   file_picker: ^11.0.2
   path_provider: ^2.1.5
@@ -44,6 +44,7 @@ dependencies:
   dio: ^5.8.0
   flutter_dotenv: ^5.2.1
   dart_openai: ^6.1.1
+#  google_generative_ai: ^0.4.7
 
 dev_dependencies:
   flutter_test:
