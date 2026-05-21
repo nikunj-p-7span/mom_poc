@@ -119,7 +119,7 @@ Notes:
       );
 
       final response = await chat.generateChatResponse();
-      return response.toString();
+      return (response is TextResponse)? response.token.toString() : response.toString();
 
     } catch (e) {
       debugPrint('[Gemma] Inference Error: $e');
