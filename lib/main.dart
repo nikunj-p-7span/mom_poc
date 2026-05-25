@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:mom_poc/screens/home_screen.dart';
+import 'package:mom_poc/screens/record_screen.dart';
 import 'package:mom_poc/utils/constants.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: ".env");
   runApp(const WhisperApp());
 }
 
@@ -26,7 +29,8 @@ class WhisperApp extends StatelessWidget {
           surfaceTintColor: Colors.transparent,
         ),
       ),
-      home: const HomeScreen(),
+      // home: const HomeScreen(),
+      home: const RecordScreen(),
     );
   }
 }

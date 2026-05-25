@@ -1,11 +1,12 @@
+import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:mom_poc/services/audio_service.dart';
-import 'package:mom_poc/services/whisper_service.dart';
 import 'package:mom_poc/screens/result_screen.dart';
 import 'package:mom_poc/utils/constants.dart';
-import 'dart:async';
-
-import 'package:whisper_kit/download_model.dart';
+import 'package:path/path.dart' as p;
+import 'package:dart_openai/dart_openai.dart';
 
 class RecordScreen extends StatefulWidget {
   const RecordScreen({super.key});
@@ -16,15 +17,14 @@ class RecordScreen extends StatefulWidget {
 
 class _RecordScreenState extends State<RecordScreen> {
   final AudioService _audioService = AudioService();
-  final WhisperService _whisperService = WhisperService();
 
   bool _isRecording = false;
   bool _isTranscribing = false;
-  bool _isDownloadingModel = false;
-  double _downloadProgress = 0;
-  String _selectedLanguage = 'en';
   Timer? _timer;
   int _recordDuration = 0;
+
+  final String _apiKey = dotenv.env['OPEN_AI_KEY'] ?? '';
+  File? _selectedFile;
 
   @override
   void dispose() {
@@ -59,7 +59,10 @@ class _RecordScreenState extends State<RecordScreen> {
         _isRecording = false;
       });
       if (path != null) {
-        _startTranscription(path);
+        setState(() {
+          _selectedFile = File(path);
+        });
+        _transcribeAudio();
       }
     } else {
       final hasPermission = await _audioService.checkPermission();
@@ -72,7 +75,7 @@ class _RecordScreenState extends State<RecordScreen> {
         return;
       }
 
-      final path = await _audioService.getTempPath();
+      final path = await _audioService.getRecordingPath();
       await _audioService.startRecording(path);
       _startTimer();
       setState(() {
@@ -82,81 +85,163 @@ class _RecordScreenState extends State<RecordScreen> {
   }
 
   Future<void> _pickFile() async {
-    final path = await _audioService.pickAudioFile();
-    if (path != null) {
-      _startTranscription(path);
+    final List<File> files = await _audioService.getRecordedFiles();
+
+    if (!mounted) return;
+
+    if (files.isEmpty) {
+      final path = await _audioService.pickAudioFile();
+      if (path != null) {
+        setState(() {
+          _selectedFile = File(path);
+        });
+        _transcribeAudio();
+      }
+      return;
     }
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Pick a Recording',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: files.length,
+                  itemBuilder: (context, index) {
+                    final file = files[index];
+                    final fileName = p.basename(file.path);
+                    final fileSize = (file.lengthSync() / 1024).toStringAsFixed(1);
+
+                    return ListTile(
+                      leading: const Icon(Icons.audio_file, color: AppConstants.primaryColor),
+                      title: Text(fileName),
+                      subtitle: Text('$fileSize KB'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        setState(() {
+                          _selectedFile = file;
+                        });
+                        _transcribeAudio();
+                      },
+                    );
+                  },
+                ),
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.folder_open),
+                title: const Text('Other audio files...'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final path = await _audioService.pickAudioFile();
+                  if (path != null) {
+                    setState(() {
+                      _selectedFile = File(path);
+                    });
+                    _transcribeAudio();
+                  }
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
-  Future<void> _startTranscription(String path) async {
+  Future<void> _transcribeAudio() async {
+    // Validate state
+    if (_apiKey.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter an OpenAI API Key.')),
+      );
+      return;
+    }
+    if (_selectedFile == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select an audio file first.')),
+      );
+      return;
+    }
+
+    // Set transcribing state to show loading indicator
     setState(() {
       _isTranscribing = true;
     });
 
     try {
-      // Initialize if not done
-      if (!_whisperService.isInitialized) {
-        debugPrint('[Whisper] Model not initialized — starting download...');
-        setState(() {
-          _isDownloadingModel = true;
-          _downloadProgress = 0;
-        });
+      // Set the API Key for dart_openai
+      OpenAI.apiKey = _apiKey;
 
-        await _whisperService.init(
-          model: WhisperModel.medium,
-          onDownloadProgress: (received, total) {
-            final progress = received / total;
-            final receivedMB = (received / 1024 / 1024).toStringAsFixed(2);
-            final totalMB = (total / 1024 / 1024).toStringAsFixed(2);
-            final percent = (progress * 100).toStringAsFixed(1);
+      // Translate multilingual audio -> English
+      final translationText = await OpenAI.instance.audio.createTranslation(
+        file: _selectedFile!,
+        model: "whisper-1",
+        responseFormat: OpenAIAudioResponseFormat.json,
+        prompt: """
+The audio contains an internal office meeting conversation.
 
-            debugPrint(
-              '[Whisper] Downloading model: $receivedMB MB / $totalMB MB ($percent%)',
-            );
+The speakers may talk in:
+- English
+- Hindi
+- Gujarati
+- Mixed multilingual sentences
 
-            setState(() {
-              _downloadProgress = progress;
-            });
-          },
-        );
+Your task:
+- Translate the entire conversation into clear professional English.
+- Preserve the original meaning and context accurately.
+- Keep technical terms, project names, APIs, code references, and business terminology unchanged where appropriate.
+- Maintain discussion flow between team members.
+- Convert informal spoken sentences into readable professional English.
+- Remove filler words, repeated words, unnecessary pauses, and background noise expressions.
+- Keep action items, decisions, blockers, deadlines, suggestions, and important discussion points accurate.
+- Preserve names of people, technologies, frameworks, libraries, and tools exactly as spoken.
+- If multiple speakers are talking, separate statements logically.
 
-        debugPrint('[Whisper] Model download complete ✓');
-        setState(() => _isDownloadingModel = false);
-      } else {
-        debugPrint('[Whisper] Model already initialized — skipping download.');
-      }
-
-      debugPrint('[Whisper] Starting transcription for: $path');
-      debugPrint('[Whisper] Selected language: $_selectedLanguage');
-
-      final text = await _whisperService.transcribe(
-        path,
-        language: _selectedLanguage,
+Important:
+- Return ONLY clean English text.
+- Do NOT summarize.
+- Do NOT generate MOM notes.
+- Do NOT omit important discussion points.
+- Do NOT add extra explanations.
+""",
       );
 
-      debugPrint('[Whisper] Transcription complete. Length: ${text.length} chars');
+      final transcriptionResult = translationText;
 
       if (mounted) {
-        Navigator.pushReplacement(
+        Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => ResultScreen(transcript: text),
+            builder: (context) => ResultScreen(transcript: transcriptionResult),
           ),
         );
       }
-    } catch (e, stackTrace) {
-      debugPrint('[Whisper] ERROR: ${e.toString()}');
-      debugPrint('[Whisper] StackTrace: $stackTrace');
+    } catch (e) {
+      // Handle transcription error
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Transcription failed: $e')));
       }
     } finally {
+      // Revert loading state
       if (mounted) {
         setState(() {
           _isTranscribing = false;
-          _isDownloadingModel = false;
         });
       }
     }
@@ -166,19 +251,16 @@ class _RecordScreenState extends State<RecordScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Record & Transcribe'),
+        title: const Text('Record & Transcribe (Online)'),
       ),
       body: Padding(
-        padding: const EdgeInsets.all(24.0),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            const SizedBox(height: 20),
-            _buildLanguageSelector(),
             const Spacer(),
-            if (_isTranscribing)
-              _buildProcessingUI()
-            else
-              _buildRecordingUI(),
+            Center(
+              child: _isTranscribing ? _buildProcessingUI() : _buildRecordingUI(),
+            ),
             const Spacer(),
             if (!_isRecording && !_isTranscribing)
               TextButton.icon(
@@ -187,35 +269,6 @@ class _RecordScreenState extends State<RecordScreen> {
                 label: const Text('Pick audio file from device'),
               ),
             const SizedBox(height: 40),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLanguageSelector() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-        child: Row(
-          children: [
-            const Icon(Icons.language, color: AppConstants.primaryColor),
-            const SizedBox(width: 12),
-            const Text('Language: ', style: TextStyle(fontWeight: FontWeight.bold)),
-            const Spacer(),
-            DropdownButton<String>(
-              value: _selectedLanguage,
-              underline: const SizedBox(),
-              items: AppConstants.languages.entries.map((e) {
-                return DropdownMenuItem(
-                  value: e.value,
-                  child: Text(e.key),
-                );
-              }).toList(),
-              onChanged: (val) {
-                if (val != null) setState(() => _selectedLanguage = val);
-              },
-            ),
           ],
         ),
       ),
@@ -241,29 +294,7 @@ class _RecordScreenState extends State<RecordScreen> {
           ),
         ],
         const SizedBox(height: 48),
-        GestureDetector(
-          onTap: _toggleRecording,
-          child: Container(
-            width: 100,
-            height: 100,
-            decoration: BoxDecoration(
-              color: _isRecording ? Colors.red : AppConstants.primaryColor,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: (_isRecording ? Colors.red : AppConstants.primaryColor).withValues(alpha: 0.3),
-                  spreadRadius: 8,
-                  blurRadius: 16,
-                ),
-              ],
-            ),
-            child: Icon(
-              _isRecording ? Icons.stop : Icons.mic,
-              color: Colors.white,
-              size: 48,
-            ),
-          ),
-        ),
+        _buildMicButton(),
         const SizedBox(height: 24),
         Text(
           _isRecording ? 'Tap to Stop' : 'Tap to Start Recording',
@@ -273,21 +304,41 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
+  Widget _buildMicButton() {
+    return GestureDetector(
+      onTap: _toggleRecording,
+      child: Container(
+        width: 100,
+        height: 100,
+        decoration: BoxDecoration(
+          color: _isRecording ? Colors.red : AppConstants.primaryColor,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: (_isRecording ? Colors.red : AppConstants.primaryColor).withValues(alpha: 0.3),
+              spreadRadius: 8,
+              blurRadius: 16,
+            ),
+          ],
+        ),
+        child: Icon(
+          _isRecording ? Icons.stop : Icons.mic,
+          color: Colors.white,
+          size: 48,
+        ),
+      ),
+    );
+  }
+
   Widget _buildProcessingUI() {
     return Column(
       children: [
         const CircularProgressIndicator(),
         const SizedBox(height: 24),
-        Text(
-          _isDownloadingModel ? 'Downloading Model...' : 'Transcribing...',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        const Text(
+          'Transcribing online with OpenAI...',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
-        if (_isDownloadingModel) ...[
-          const SizedBox(height: 16),
-          LinearProgressIndicator(value: _downloadProgress),
-          const SizedBox(height: 8),
-          Text('${(_downloadProgress * 100).toStringAsFixed(1)}%'),
-        ],
         const SizedBox(height: 16),
         const Text(
           'This may take a few moments depending on audio length.',
