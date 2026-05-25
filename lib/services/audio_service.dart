@@ -33,13 +33,61 @@ class AudioService {
     return await _recorder.stop();
   }
 
-  /// Get a path for recording in the documents directory with a timestamp
-  Future<String> getRecordingPath() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
-    if (!await recordingsDir.exists()) {
-      await recordingsDir.create(recursive: true);
+  /// Helper to get the MOM Generator directory path with proper permissions
+  Future<String> getMOMGeneratorDirectoryPath() async {
+    if (Platform.isAndroid) {
+      bool hasAccess = false;
+      
+      // Request manageExternalStorage if on Android 11+
+      if (await Permission.manageExternalStorage.request().isGranted) {
+        hasAccess = true;
+      } else if (await Permission.storage.request().isGranted) {
+        hasAccess = true;
+      }
+      
+      if (hasAccess) {
+        final publicDownloadDir = Directory('/storage/emulated/0/MOM Generator');
+        try {
+          if (!await publicDownloadDir.exists()) {
+            await publicDownloadDir.create(recursive: true);
+          }
+          return publicDownloadDir.path;
+        } catch (e) {
+          // If public Download creation fails, fallback to app external storage
+        }
+      }
+      
+      // Fallback 1: App specific external storage
+      final externalDir = await getExternalStorageDirectory();
+      if (externalDir != null) {
+        final fallbackDir = Directory(p.join(externalDir.path, 'MOM Generator'));
+        if (!await fallbackDir.exists()) {
+          await fallbackDir.create(recursive: true);
+        }
+        return fallbackDir.path;
+      }
+    } else if (Platform.isIOS) {
+      // iOS: Application Documents folder made visible via Info.plist UIFileSharingEnabled
+      final documentsDir = await getApplicationDocumentsDirectory();
+      final momDir = Directory(p.join(documentsDir.path, 'MOM Generator'));
+      if (!await momDir.exists()) {
+        await momDir.create(recursive: true);
+      }
+      return momDir.path;
     }
+    
+    // Fallback: App Documents folder
+    final documentsDir = await getApplicationDocumentsDirectory();
+    final momDir = Directory(p.join(documentsDir.path, 'MOM Generator'));
+    if (!await momDir.exists()) {
+      await momDir.create(recursive: true);
+    }
+    return momDir.path;
+  }
+
+  /// Get a path for recording in the MOM Generator directory with a timestamp
+  Future<String> getRecordingPath() async {
+    final dirPath = await getMOMGeneratorDirectoryPath();
     
     final now = DateTime.now();
     final hour12 = now.hour % 12 == 0 ? 12 : now.hour % 12;
@@ -48,15 +96,15 @@ class AudioService {
     final dateStr = "${now.year}-${_twoDigits(now.month)}-${_twoDigits(now.day)}";
     final timeStr = "${_twoDigits(hour12)}.${_twoDigits(now.minute)}.${_twoDigits(now.second)} $amPm";
     
-    return p.join(recordingsDir.path, 'recording $dateStr $timeStr.wav');
+    return p.join(dirPath, 'recording $dateStr $timeStr.wav');
   }
 
   String _twoDigits(int n) => n >= 10 ? "$n" : "0$n";
 
-  /// Get all recorded files from the app's recording directory
+  /// Get all recorded files from the MOM Generator directory
   Future<List<File>> getRecordedFiles() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory(p.join(dir.path, 'recordings'));
+    final dirPath = await getMOMGeneratorDirectoryPath();
+    final recordingsDir = Directory(dirPath);
     if (!await recordingsDir.exists()) return [];
     
     final files = recordingsDir.listSync()

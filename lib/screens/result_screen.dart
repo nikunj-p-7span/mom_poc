@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:mom_poc/utils/constants.dart';
-import 'package:mom_poc/screens/record_screen.dart';
-import 'package:mom_poc/services/gemma_service.dart';
+import 'package:dart_openai/dart_openai.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 class ResultScreen extends StatefulWidget {
@@ -17,12 +17,10 @@ class ResultScreen extends StatefulWidget {
 
 class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final GemmaService _gemmaService = GemmaService();
+  final String _apiKey = dotenv.env['OPEN_AI_KEY'] ?? '';
 
   String? _generatedNotes;
   bool _isGenerating = false;
-  bool _isDownloading = false;
-  String _statusMessage = 'Preparing...';
 
   @override
   void initState() {
@@ -50,29 +48,13 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
   Future<void> _generateNotes() async {
     _tabController.animateTo(1); // Switch to AI Notes tab immediately
 
-    // Check if model needs installation/loading
-    if (!_gemmaService.isModelLoaded) {
-      setState(() {
-        _isDownloading = true;
-        _statusMessage = 'Checking model status...';
-      });
-
-      try {
-        await _gemmaService.downloadModel(
-          onProgressMessage: (message) {
-            setState(() => _statusMessage = message);
-          },
+    if (_apiKey.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enter an OpenAI API Key.')),
         );
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error preparing Gemma model: $e')),
-          );
-        }
-        setState(() => _isDownloading = false);
-        return;
       }
-      setState(() => _isDownloading = false);
+      return;
     }
 
     setState(() {
@@ -80,20 +62,50 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
     });
 
     try {
-      final notes = await _gemmaService.generateMeetingNotes(widget.transcript);
+      OpenAI.apiKey = _apiKey;
+
+      final prompt = """
+You are an expert meeting assistant. Based on the following transcript, generate professional and concise meeting notes.
+Format the output with Markdown and include the following sections:
+1. **Executive Summary** (A brief overview of the meeting)
+2. **Key Discussion Points** (Bulleted list of main topics discussed)
+3. **Action Items & Next Steps** (Clear tasks assigned to individuals)
+4. **Decisions Made** (Key outcomes or agreements)
+
+Transcript:
+${widget.transcript}
+""";
+
+      final chatCompletion = await OpenAI.instance.chat.create(
+        model: "gpt-4o",
+        messages: [
+          OpenAIChatCompletionChoiceMessageModel(
+            content: [
+              OpenAIChatCompletionChoiceMessageContentItemModel.text(prompt),
+            ],
+            role: OpenAIChatMessageRole.user,
+          ),
+        ],
+      );
+
+      final notes = chatCompletion.choices.first.message.content?.first.text ?? 'No notes generated.';
+
       setState(() {
         _generatedNotes = notes;
       });
     } catch (e) {
       if (mounted) {
+        debugPrint('${e.toString()}');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error generating notes: $e')),
         );
       }
     } finally {
-      setState(() {
-        _isGenerating = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+        });
+      }
     }
   }
 
@@ -154,7 +166,7 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
             ),
           ),
           const SizedBox(height: 16),
-          if (_generatedNotes == null && !_isGenerating && !_isDownloading)
+          if (_generatedNotes == null && !_isGenerating)
             ElevatedButton.icon(
               onPressed: _generateNotes,
               icon: const Icon(Icons.auto_awesome),
@@ -172,39 +184,6 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
   }
 
   Widget _buildNotesTab() {
-    if (_isDownloading) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.download, size: 64, color: AppConstants.primaryColor),
-              const SizedBox(height: 24),
-              const Text(
-                'AI Model Preparation',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Gemma is required for offline note generation.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.black54),
-              ),
-              const SizedBox(height: 32),
-              Text(
-                _statusMessage,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontWeight: FontWeight.bold, color: AppConstants.primaryColor),
-              ),
-              const SizedBox(height: 24),
-              const CircularProgressIndicator(),
-            ],
-          ),
-        ),
-      );
-    }
-
     if (_isGenerating) {
       return const Center(
         child: Column(
@@ -213,11 +192,11 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
             CircularProgressIndicator(),
             SizedBox(height: 24),
             Text(
-              'Gemma is reading your transcript...',
+              'OpenAI is reading your transcript...',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             SizedBox(height: 8),
-            Text('This happens completely offline.'),
+            Text('This happens online.'),
           ],
         ),
       );
