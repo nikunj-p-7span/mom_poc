@@ -5,6 +5,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:mom_poc/services/audio_service.dart';
 import 'package:mom_poc/screens/result_screen.dart';
 import 'package:mom_poc/utils/constants.dart';
+import 'package:mom_poc/utils/wav_splitter.dart';
 import 'package:path/path.dart' as p;
 import 'package:dart_openai/dart_openai.dart';
 
@@ -25,6 +26,7 @@ class _RecordScreenState extends State<RecordScreen> {
 
   final String _apiKey = dotenv.env['OPEN_AI_KEY'] ?? '';
   File? _selectedFile;
+  String _transcribingProgress = '';
 
   @override
   void dispose() {
@@ -179,6 +181,41 @@ class _RecordScreenState extends State<RecordScreen> {
       return;
     }
 
+    // Check file size (OpenAI Whisper limit is 25 MB = 26,214,400 bytes)
+    int fileLength = 0;
+    try {
+      fileLength = await _selectedFile!.length();
+    } catch (e) {
+      // Proceed if we cannot read the file length for some reason
+    }
+
+    const int maxLimit = 25 * 1024 * 1024; // 26214400 bytes
+    List<File> filesToTranscribe = [_selectedFile!];
+    bool isSplit = false;
+
+    if (fileLength > maxLimit) {
+      final isWav = p.extension(_selectedFile!.path).toLowerCase() == '.wav';
+      if (isWav) {
+        setState(() {
+          _isTranscribing = true;
+          _transcribingProgress = "Splitting WAV file into smaller parts...";
+        });
+        try {
+          filesToTranscribe = await WavSplitter.splitWavFile(_selectedFile!, maxChunkSizeBytes: 20 * 1024 * 1024);
+          isSplit = filesToTranscribe.length > 1;
+        } catch (e) {
+          // If splitting fails, fall back to trying original file or showing error
+          filesToTranscribe = [_selectedFile!];
+        }
+      } else {
+        final double sizeInMb = fileLength / (1024 * 1024);
+        if (mounted) {
+          _showLargeFileBottomSheet(sizeInMb);
+        }
+        return;
+      }
+    }
+
     // Set transcribing state to show loading indicator
     setState(() {
       _isTranscribing = true;
@@ -187,13 +224,29 @@ class _RecordScreenState extends State<RecordScreen> {
     try {
       // Set the API Key for dart_openai
       OpenAI.apiKey = _apiKey;
+      OpenAI.requestsTimeOut = const Duration(minutes: 5);
 
-      // Translate multilingual audio -> English
-      final translationText = await OpenAI.instance.audio.createTranslation(
-        file: _selectedFile!,
-        model: "whisper-1",
-        responseFormat: OpenAIAudioResponseFormat.json,
-        prompt: """
+      final List<String> transcriptions = [];
+
+      for (int i = 0; i < filesToTranscribe.length; i++) {
+        final File file = filesToTranscribe[i];
+        
+        if (filesToTranscribe.length > 1) {
+          setState(() {
+            _transcribingProgress = "Transcribing part ${i + 1} of ${filesToTranscribe.length}...";
+          });
+        } else {
+          setState(() {
+            _transcribingProgress = "Transcribing online with OpenAI...";
+          });
+        }
+
+        // Translate multilingual audio -> English
+        final translationText = await OpenAI.instance.audio.createTranslation(
+          file: file,
+          model: "whisper-1",
+          responseFormat: OpenAIAudioResponseFormat.json,
+          prompt: """
 The audio contains an internal office meeting conversation.
 
 The speakers may talk in:
@@ -220,9 +273,26 @@ Important:
 - Do NOT omit important discussion points.
 - Do NOT add extra explanations.
 """,
-      );
+        );
+        
+        if (translationText.trim().isNotEmpty) {
+          transcriptions.add(translationText.trim());
+        }
+      }
 
-      final transcriptionResult = translationText;
+      // Merge results
+      final transcriptionResult = transcriptions.join('\n\n');
+
+      // Clean up temporary split WAV files if we generated them
+      if (isSplit) {
+        for (final File file in filesToTranscribe) {
+          try {
+            if (await file.exists()) {
+              await file.delete();
+            }
+          } catch (_) {}
+        }
+      }
 
       if (mounted) {
         Navigator.push(
@@ -235,13 +305,15 @@ Important:
     } catch (e) {
       // Handle transcription error
       if (mounted) {
+        debugPrint('Transcription failed: $e');
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Transcription failed: $e')));
       }
     } finally {
-      // Revert loading state
+      // Revert loading state and reset progress
       if (mounted) {
         setState(() {
           _isTranscribing = false;
+          _transcribingProgress = '';
         });
       }
     }
@@ -335,15 +407,158 @@ Important:
       children: [
         const CircularProgressIndicator(),
         const SizedBox(height: 24),
-        const Text(
-          'Transcribing online with OpenAI...',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        Text(
+          _transcribingProgress.isNotEmpty ? _transcribingProgress : 'Transcribing online with OpenAI...',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 16),
         const Text(
           'This may take a few moments depending on audio length.',
           textAlign: TextAlign.center,
           style: TextStyle(color: Colors.black54),
+        ),
+      ],
+    );
+  }
+
+  void _showLargeFileBottomSheet(double sizeInMb) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.black12,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.warning_rounded,
+                  color: Colors.amber.shade800,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'File Too Large',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 22,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Selected file is ${sizeInMb.toStringAsFixed(1)} MB, which exceeds the OpenAI Whisper 25 MB limit.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 15, color: Colors.black87, height: 1.4),
+              ),
+              const SizedBox(height: 24),
+              const Divider(),
+              const SizedBox(height: 16),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Recommended Solutions:',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              _buildTipRow(
+                context,
+                icon: Icons.mic_none_rounded,
+                title: 'Use App Audio Recorder',
+                description: 'We have optimized the built-in recorder to compress files at 24 kbps. Recording directly in the app now allows over 2 hours of continuous audio under the 25 MB limit!',
+              ),
+              const SizedBox(height: 16),
+              _buildTipRow(
+                context,
+                icon: Icons.compress_rounded,
+                title: 'Compress Before Uploading',
+                description: 'Use a free online audio compressor (e.g. compress mp3/m4a to 24-32kbps mono) or convert your file to MP3 format with standard compression settings.',
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'Got it',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTipRow(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String description,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: Theme.of(context).colorScheme.primary, size: 24),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                description,
+                style: const TextStyle(color: Colors.black54, fontSize: 13, height: 1.3),
+              ),
+            ],
+          ),
         ),
       ],
     );

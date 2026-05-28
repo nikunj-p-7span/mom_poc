@@ -63,6 +63,7 @@ class _ResultScreenState extends State<ResultScreen> with SingleTickerProviderSt
 
     try {
       OpenAI.apiKey = _apiKey;
+      OpenAI.requestsTimeOut = const Duration(minutes: 5);
 
       final prompt = """
 You are an expert meeting assistant. Based on the following transcript, generate professional and concise meeting notes.
